@@ -1,0 +1,8 @@
+build/
+factory/
+deps/
+hf/
+qwenc/
+*.tiktoken
+model.safetensors
+*.safetensors
