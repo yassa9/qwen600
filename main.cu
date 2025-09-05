@@ -14,6 +14,20 @@
 // utils
 // ================================================================
 
+void
+print_banner()
+{
+    printf("\n" COLOR_ORANGE 
+           "            ██████╗  ██████╗  ██████╗  ██████╗ \n"
+           "           ██╔═══██╗██╔════╝ ██╔═████╗██╔═████╗\n"
+           "           ██║   ██║███████╗ ██║██╔██║██║██╔██║\n"
+           "           ██║▄▄ ██║██╔═══██╗████╔╝██║████╔╝██║\n"
+           "           ╚██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝\n"
+           "            ╚══▀▀═╝  ╚═════╝  ╚═════╝  ╚═════╝ \n"
+           COLOR_RESET);
+    printf(COLOR_CYAN "            github: @yassa9\n" COLOR_RESET);
+}
+
 long
 time_in_ms()
 {
@@ -217,6 +231,7 @@ error_usage()
 int 
 main(int argc, char *argv[])
 {
+    print_banner();
     // default parameters
     char *model_dir = NULL;
     float temperature = 0.6f;

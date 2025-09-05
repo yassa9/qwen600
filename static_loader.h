@@ -1,3 +1,5 @@
+// loader.h
+
 #pragma once
 
 #include <iostream>
@@ -15,6 +17,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "config.h"
+
 #define CUDA_CHECK(call)                                                     \
     do {                                                                     \
         cudaError_t err = call;                                              \
@@ -29,7 +33,6 @@ namespace qwen_loader
 {
 
 using bf16 = __nv_bfloat16;
-const int N_LAYERS = 28;
 
 struct
 AttentionWeights

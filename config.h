@@ -10,6 +10,8 @@
 #define COLOR_BOLD_RED "\x1b[1;31m"
 #define COLOR_GREEN    "\x1b[32m"
 #define COLOR_YELLOW   "\x1b[33m"
+#define COLOR_ORANGE   "\x1b[33m"
+#define COLOR_CYAN     "\033[36m"
 
 // ================================================================
 // CONFIGS
@@ -28,8 +30,11 @@ constexpr int N_HEADS = 16;
 constexpr int N_KV_HEADS = 8;
 constexpr int HEAD_DIM = 128;
 
-constexpr float EPS = 1e-6f;
+constexpr float INV_HEAD_DIM = 1.0f / HEAD_DIM;
+constexpr float INV_DIM = 1.0f / DIM;
+
 constexpr float ROPE_THETA = 1000000.0f;
+constexpr float EPS = 1e-6f;
 
 constexpr int Q_DIM =     N_HEADS * HEAD_DIM; // 16 * 128 = 2048
 constexpr int KV_DIM = N_KV_HEADS * HEAD_DIM; //  8 * 128 = 1024

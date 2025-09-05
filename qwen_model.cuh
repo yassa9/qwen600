@@ -1,4 +1,4 @@
-// file: qwen600.cu
+// qwen_model.cuh
 
 #pragma once
 
@@ -6,21 +6,13 @@
 #include <stdlib.h>
 #include <math.h>
 
-// #include <stdint.h>
-// #include <string.h>
-// #include <ctype.h>
-// #include <cfloat>
-// #include <time.h>
-// #include <fcntl.h>
-// #include <iomanip>
-
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 
 #include "config.h"
-#include "loader.h"
+#include "static_loader.h"
 
 // ================================================================
 // globals
@@ -129,8 +121,7 @@ rms_norm_kernel(
     __nv_bfloat16* __restrict__ Y,
     const __nv_bfloat16* __restrict__ X,
     const __nv_bfloat16* __restrict__ weight,
-    size_t D,
-    float inv_D)
+    size_t D)
 {
     const int t_idx = threadIdx.x;
     const int vec_iters = D / 2;
@@ -146,7 +137,10 @@ rms_norm_kernel(
         __nv_bfloat162 v_bf16 = __ldg(&row_in[idx]);
         // convert to fp32 for math
         float2 v_fp32 = __bfloat1622float2(v_bf16);
-        lsum += v_fp32.x * v_fp32.x + v_fp32.y * v_fp32.y;
+
+        // lsum += v_fp32.x * v_fp32.x + v_fp32.y * v_fp32.y;
+        lsum = __fmaf_rn(v_fp32.x, v_fp32.x, lsum);
+        lsum = __fmaf_rn(v_fp32.y, v_fp32.y, lsum);
     }
 
     using BlockReduce = cub::BlockReduce<float, THREADS_PER_BLOCK>;
@@ -156,7 +150,7 @@ rms_norm_kernel(
     __shared__ float mul_val;
     if (t_idx == 0)
     {
-        float val = block_sum * inv_D + EPS;
+        float val = __fmaf_rn(block_sum, INV_DIM, EPS);
         float approx = __frsqrt_rn(val);
         // mul_val = approx * (1.5f - 0.5f * val * approx * approx);
         mul_val = rsqrtf(val);
@@ -172,17 +166,17 @@ rms_norm_kernel(
 
         v_in_fp32.x = (v_in_fp32.x * mul_val) * v_weight_fp32.x;
         v_in_fp32.y = (v_in_fp32.y * mul_val) * v_weight_fp32.y;
-        
+
         // convert back to BF16 for storing
-        row_out[idx] = __float22bfloat162_rn(v_in_fp32); 
+        row_out[idx] = __float22bfloat162_rn(v_in_fp32);
     }
 }
 
 void
 rmsnorm_gpu(
-    __nv_bfloat16* o, 
-    const __nv_bfloat16* x, 
-    const __nv_bfloat16* weight, 
+    __nv_bfloat16* o,
+    const __nv_bfloat16* x,
+    const __nv_bfloat16* weight,
     int dim)
 {
     if (dim % 2 != 0)
@@ -193,10 +187,81 @@ rmsnorm_gpu(
     // if dim > (THREADS_PER_BLOCK * some_threshold), a multi-block reduction might be needed,
     // but for typical dimensions up to 8192, a single block is sufficient and simpler.
     const int num_blocks = 1;
-    float inv_D = 1.0f / static_cast<float>(dim);
 
-    rms_norm_kernel<THREADS_PER_BLOCK><<<num_blocks, THREADS_PER_BLOCK>>>(
-        o, x, weight, dim, inv_D);
+    rms_norm_kernel<THREADS_PER_BLOCK><<<num_blocks, THREADS_PER_BLOCK>>>
+        (o, x, weight, dim);
+}
+
+template <int THREADS_PER_BLOCK, int HEAD_DIM>
+__global__ void __launch_bounds__(THREADS_PER_BLOCK)
+fused_multi_rmsnorm_kernel(
+    bf16* __restrict__ vecs,
+    const bf16* __restrict__ weight,
+    int num_vecs)
+{
+    // each block processes one vector/head
+    const int vec_idx = blockIdx.x;
+    if (vec_idx >= num_vecs) return;
+
+    const int t_idx = threadIdx.x;
+    const int vec_iters = HEAD_DIM / 2;
+
+    bf16* vec_start = vecs + vec_idx * HEAD_DIM;
+
+    const __nv_bfloat162* row_in = reinterpret_cast<const __nv_bfloat162*>(vec_start);
+    const __nv_bfloat162* weight_in = reinterpret_cast<const __nv_bfloat162*>(weight);
+    __nv_bfloat162* row_out = reinterpret_cast<__nv_bfloat162*>(vec_start);
+
+    // 1. calculate sum of squares
+    float lsum = 0.0f;
+    for (int idx = t_idx; idx < vec_iters; idx += THREADS_PER_BLOCK)
+    {
+        __nv_bfloat162 v_bf16 = __ldg(&row_in[idx]);
+        float2 v_fp32 = __bfloat1622float2(v_bf16);
+        lsum += v_fp32.x * v_fp32.x + v_fp32.y * v_fp32.y;
+    }
+
+    // 2. reduce sum within the block
+    using BlockReduce = cub::BlockReduce<float, THREADS_PER_BLOCK>;
+    __shared__ typename BlockReduce::TempStorage tmp;
+    float block_sum = BlockReduce(tmp).Sum(lsum);
+
+    // 3. calculate the normalization factor
+    __shared__ float mul_val;
+    if (t_idx == 0) { mul_val = rsqrtf(block_sum * INV_HEAD_DIM + EPS); }
+    __syncthreads();
+
+    // 4. applying the normalization
+    for (int idx = t_idx; idx < vec_iters; idx += THREADS_PER_BLOCK)
+    {
+        __nv_bfloat162 v_in_bf16 = __ldg(&row_in[idx]);
+        __nv_bfloat162 v_weight_bf16 = __ldg(&weight_in[idx]);
+        float2 v_in_fp32 = __bfloat1622float2(v_in_bf16);
+        float2 v_weight_fp32 = __bfloat1622float2(v_weight_bf16);
+
+        v_in_fp32.x = (v_in_fp32.x * mul_val) * v_weight_fp32.x;
+        v_in_fp32.y = (v_in_fp32.y * mul_val) * v_weight_fp32.y;
+
+        row_out[idx] = __float22bfloat162_rn(v_in_fp32);
+    }
+}
+
+void
+qk_norm_fused_gpu(
+    bf16* q,
+    bf16* k,
+    const bf16* q_norm_weight,
+    const bf16* k_norm_weight)
+{
+    constexpr int QK_NORM_THREADS_PER_BLOCK = 64;
+
+    // launching ONE kernel for all query heads
+    fused_multi_rmsnorm_kernel<QK_NORM_THREADS_PER_BLOCK, HEAD_DIM><<<N_HEADS, QK_NORM_THREADS_PER_BLOCK>>>
+    (q, q_norm_weight, N_HEADS);
+
+    // launching ONE kernel for all key heads
+    fused_multi_rmsnorm_kernel<QK_NORM_THREADS_PER_BLOCK, HEAD_DIM><<<N_KV_HEADS, QK_NORM_THREADS_PER_BLOCK>>>
+    (k, k_norm_weight, N_KV_HEADS);
 }
 
 // ================================================================
@@ -246,6 +311,69 @@ rope_gpu(
     int num_pairs = Q_DIM / 2;
     int grid_size = (num_pairs + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     rope_kernel<<<grid_size, THREADS_PER_BLOCK>>>(q, k, pos);
+}
+
+__global__ void
+qwen_naive_rope_kernel(
+    bf16* q,
+    bf16* k_cache_pos,
+    int pos)
+{
+    // `blockIdx.x` will correspond to the head index 'h'
+    int h = blockIdx.x;
+    // `threadIdx.x` will correspond to the inner loop index 'j'
+    int j = threadIdx.x;
+
+    if (h < N_HEADS && j < HEAD_DIM / 2)
+    {
+        bf16* q_head = q + h * HEAD_DIM;
+
+        float freq = 1.0f / powf(ROPE_THETA, (float)(j * 2) / (float)HEAD_DIM);
+        float val = (float)pos * freq;
+        float fcr, fci;
+        sincosf(val, &fci, &fcr);
+
+        float q_real = __bfloat162float(q_head[j]);
+        float q_imag = __bfloat162float(q_head[j + HEAD_DIM / 2]);
+
+        float q_rotated_real = q_real * fcr - q_imag * fci;
+        float q_rotated_imag = q_real * fci + q_imag * fcr;
+
+        q_head[j]              = __float2bfloat16_rn(q_rotated_real);
+        q_head[j + HEAD_DIM/2] = __float2bfloat16_rn(q_rotated_imag);
+    }
+
+    if (h < N_KV_HEADS && j < HEAD_DIM / 2)
+    {
+        bf16* k_head = k_cache_pos + h * HEAD_DIM;
+
+        float freq = 1.0f / powf(ROPE_THETA, (float)(j * 2) / (float)HEAD_DIM);
+        float val = (float)pos * freq;
+        float fcr, fci;
+        sincosf(val, &fci, &fcr);
+
+        float k_real = __bfloat162float(k_head[j]);
+        float k_imag = __bfloat162float(k_head[j + HEAD_DIM / 2]);
+
+        // perform rotation in fp32
+        float k_rotated_real = k_real * fcr - k_imag * fci;
+        float k_rotated_imag = k_real * fci + k_imag * fcr;
+
+        k_head[j]              = __float2bfloat16_rn(k_rotated_real);
+        k_head[j + HEAD_DIM/2] = __float2bfloat16_rn(k_rotated_imag);
+    }
+}
+
+void
+rope_gpu_naive(
+    __nv_bfloat16* q,
+    __nv_bfloat16* k,
+    int pos)
+{
+    dim3 grid(N_HEADS, 1, 1);
+    dim3 block(HEAD_DIM / 2, 1, 1);
+
+    qwen_naive_rope_kernel<<<grid, block>>>(q, k, pos);
 }
 
 // ================================================================
@@ -314,14 +442,16 @@ attention_qk_kernel(
             float2 q_vals = __bfloat1622float2(q_pair);
             float2 k_vals = __bfloat1622float2(k_pair);
 
-            score += q_vals.x * k_vals.x + q_vals.y * k_vals.y;
+            // score += q_vals.x * k_vals.x + q_vals.y * k_vals.y;
+            score = __fmaf_rn(q_vals.x, k_vals.x, score);
+            score = __fmaf_rn(q_vals.y, k_vals.y, score);
         }
 
         score /= sqrtf((float)HEAD_DIM);
         att[(size_t)h * SEQ_LEN + t] = score;
-    }
 }
 
+}
 __global__ void
 attention_v_kernel(
     bf16* out,
@@ -342,7 +472,9 @@ attention_v_kernel(
     for (int t = 0; t <= pos; t++)
     {
         const bf16* v_vec = v_cache + (size_t)t * KV_DIM + (size_t)kv_head_idx * HEAD_DIM;
-        weighted_sum += att_head[t] * __bfloat162float(v_vec[i]);   
+
+        // weighted_sum += att_head[t] * __bfloat162float(v_vec[i]);   
+        weighted_sum = __fmaf_rn(att_head[t], __bfloat162float(v_vec[i]), weighted_sum);
     }
     out_head[i] = __float2bfloat16_rn(weighted_sum);
 }
@@ -385,13 +517,13 @@ add_residual_kernel(
     {
         float x_fp32 = __bfloat162float(x[i]);
         float res_fp32 = __bfloat162float(residual[i]);
-        
         float result_fp32 = x_fp32 + res_fp32;
         x[i] = __float2bfloat16_rn(result_fp32);
     }
 }
 
 void
+
 add_residual_gpu(
     __nv_bfloat16* x, 
     const __nv_bfloat16* residual, 
@@ -444,17 +576,18 @@ matmul_cublas(
     const __nv_bfloat16* W, 
     const __nv_bfloat16* x, 
     int m, 
-    int n)
+    int n,
+    float alpha = 1.0f,
+    float beta = 0.0f)
 {
-    // In cuBLAS, matrices are column-major by default. 
-    // Our weights are row-major.
-    // The W matrix is (m, n) in row-major layout, which is (n, m) in column-major.
-    // We want to compute y = Wx.
-    // By telling cublasSgemv to use the transpose of W (CUBLAS_OP_T),
+    // in cuBLAS, matrices are column-major by default. 
+    // weights are row-major.
+    // W matrix is (m, n) in row-major layout, which is (n, m) in column-major.
+    // we want to compute y = Wx.
+    // by telling cublasSgemv to use the transpose of W (CUBLAS_OP_T),
     // it correctly treats our row-major matrix as a row-major matrix.
 
-    float alpha = 1.0f; // Multiplier for the matrix product
-    float beta = 0.0f;  // Multiplier for the value already in y (we want to overwrite it)
+    // C = alpha * (A @ B) + beta * C
 
     // cublasSgemv: y = alpha * op(A) * x + beta * y
     // op(A) is our W matrix. handle is the cuBLAS context.
@@ -470,98 +603,23 @@ matmul_cublas(
                  m,                  // rows of C (output y)
                  1,                  // columns of C (output y is a vector)
                  n,                  // common dimension (k)
+                 
                  &alpha,             // host pointer
                  W,                  // A matrix (W)
                  CUDA_R_16BF,        // A datatype
                  n,                  // leading dimension of A
+
                  x,                  // B matrix (x)
                  CUDA_R_16BF,        // B datatype
                  n,                  // leading dimension of B
+                 
                  &beta,              // host pointer
                  y,                  // C matrix (y)
                  CUDA_R_16BF,        // C datatype
                  m,                  // leading dimension of C
-                 CUDA_R_32F,         // Compute type: USE fp32 for precision
+                 
+                 CUDA_R_32F,         // compute type: use fp32 for precision
                  CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-}
-
-// file: qwen600.cu (replace the old rope_kernel)
-
-__global__ void
-qwen_naive_rope_kernel(
-    bf16* q,
-    bf16* k_cache_pos,
-    int pos)
-{
-    // `blockIdx.x` will correspond to the head index 'h'
-    int h = blockIdx.x;
-    // `threadIdx.x` will correspond to the inner loop index 'j'
-    int j = threadIdx.x;
-
-    // --- Part 1: Rotate Q vector ---
-    // This part of the grid is for all N_HEADS
-    if (h < N_HEADS && j < HEAD_DIM / 2) {
-        bf16* q_head = q + h * HEAD_DIM;
-
-        // Calculate frequency
-        float freq = 1.0f / powf(ROPE_THETA, (float)(j * 2) / (float)HEAD_DIM);
-        float val = (float)pos * freq;
-        float fcr, fci;
-        sincosf(val, &fci, &fcr);
-
-        // Load the "real" and "imaginary" parts
-        float q_real = __bfloat162float(q_head[j]);
-        float q_imag = __bfloat162float(q_head[j + HEAD_DIM / 2]);
-
-        // Perform rotation in fp32
-        float q_rotated_real = q_real * fcr - q_imag * fci;
-        float q_rotated_imag = q_real * fci + q_imag * fcr;
-
-        // Store back to device memory as BF16
-        q_head[j]              = __float2bfloat16_rn(q_rotated_real);
-        q_head[j + HEAD_DIM/2] = __float2bfloat16_rn(q_rotated_imag);
-    }
-
-    // --- Part 2: Rotate K vector ---
-    // This part of the grid is only for the N_KV_HEADS
-    if (h < N_KV_HEADS && j < HEAD_DIM / 2) {
-        bf16* k_head = k_cache_pos + h * HEAD_DIM;
-
-        // Frequency calculation is identical to Q
-        float freq = 1.0f / powf(ROPE_THETA, (float)(j * 2) / (float)HEAD_DIM);
-        float val = (float)pos * freq;
-        float fcr, fci;
-        sincosf(val, &fci, &fcr);
-
-        // Load the "real" and "imaginary" parts
-        float k_real = __bfloat162float(k_head[j]);
-        float k_imag = __bfloat162float(k_head[j + HEAD_DIM / 2]);
-
-        // Perform rotation in fp32
-        float k_rotated_real = k_real * fcr - k_imag * fci;
-        float k_rotated_imag = k_real * fci + k_imag * fcr;
-
-        // Store back to device memory as BF16
-        k_head[j]              = __float2bfloat16_rn(k_rotated_real);
-        k_head[j + HEAD_DIM/2] = __float2bfloat16_rn(k_rotated_imag);
-    }
-}
-
-// file: qwen600.cu (replace the old rope_gpu function)
-
-void
-rope_gpu2(
-    __nv_bfloat16* q,
-    __nv_bfloat16* k,
-    int pos)
-{
-    // We need enough blocks to cover all heads (max of N_HEADS and N_KV_HEADS)
-    // and enough threads per block to cover half the head dimension.
-    dim3 grid(N_HEADS, 1, 1);
-    dim3 block(HEAD_DIM / 2, 1, 1);
-
-    // Launch the kernel that exactly mimics the logic from qwen.c
-    qwen_naive_rope_kernel<<<grid, block>>>(q, k, pos);
 }
 
 // ================================================================
@@ -601,7 +659,6 @@ float* forward(
         rmsnorm_gpu(s->xb, s->x, layer.input_layernorm_weight, DIM);
 
         // 3. QKV matrix multiplications
-        // k and v are written directly into their cache locations for this timestep
         bf16* k_cache_pos = s->key_cache   + (size_t)l * SEQ_LEN * KV_DIM + (size_t)pos * KV_DIM;
         bf16* v_cache_pos = s->value_cache + (size_t)l * SEQ_LEN * KV_DIM + (size_t)pos * KV_DIM;
         matmul_cublas(handle, s->q,        layer.attention.q_proj_weight, s->xb,  Q_DIM, DIM);
@@ -609,25 +666,18 @@ float* forward(
         matmul_cublas(handle, v_cache_pos, layer.attention.v_proj_weight, s->xb, KV_DIM, DIM);
 
         // 4. QK-Norm
-        for (int h = 0; h < N_HEADS; h++)
-        {
-            rmsnorm_gpu(s->q + h * HEAD_DIM, s->q + h * HEAD_DIM, layer.attention.q_norm_weight, HEAD_DIM);
-        }
-        for (int h = 0; h < N_KV_HEADS; h++)
-        {
-            rmsnorm_gpu(k_cache_pos + h * HEAD_DIM, k_cache_pos + h * HEAD_DIM, layer.attention.k_norm_weight, HEAD_DIM);
-        }
+        qk_norm_fused_gpu(s->q, k_cache_pos, layer.attention.q_norm_weight, layer.attention.k_norm_weight);
 
         // 5. RoPE
         // rope_gpu(s->q, k_cache_pos, pos);
-        rope_gpu2(s->q, k_cache_pos, pos);
+        rope_gpu_naive(s->q, k_cache_pos, pos);
 
         // 6. MHA (QK^T V)
         attention_gpu(s, l, pos);
 
-        // 7. final attention output projection and residual connection
-        matmul_cublas(handle, s->xb2, layer.attention.o_proj_weight, s->q, DIM, Q_DIM);
-        add_residual_gpu(s->x, s->xb2, DIM);
+        // 7. final attention output projection and residual connection (fused)
+        matmul_cublas(handle, s->x, layer.attention.o_proj_weight, s->q, DIM, Q_DIM, 1.0f, 1.0f);
+        // add_residual_gpu(s->x, s->xb2, DIM);
 
         // === FFN BLOCK ===
 
@@ -643,16 +693,15 @@ float* forward(
         // in-place operation on s->hb, using s->hb2 as the gate.
         swiglu_gpu(s->hb, s->hb2, HIDDEN_DIM);
 
-        // 10. final FFN Down Projection matmul and residual connection
-        matmul_cublas(handle, s->xb, layer.ffn.down_proj_weight, s->hb, DIM, HIDDEN_DIM);
-        // add the result back to the main path s->x
-        add_residual_gpu(s->x, s->xb, DIM);
+        // 10. final FFN Down Projection matmul and residual connection (fused)
+        matmul_cublas(handle, s->x, layer.ffn.down_proj_weight, s->hb, DIM, HIDDEN_DIM, 1.0f, 1.0f);
+        // add_residual_gpu(s->x, s->xb, DIM);
     }
 
     // === FINAL CLASSIFIER ===
 
     // 11. final RMSNorm
-    // In-place operation on s->x
+    // in-place operation on s->x
     rmsnorm_gpu(s->x, s->x, w->final_norm_weight, DIM);
 
     // 12. classifier Matmul
