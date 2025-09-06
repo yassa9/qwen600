@@ -27,9 +27,6 @@ What does `qwen600` include:
 - [LLMs-from-scratch - Sebastian Raschka](https://github.com/rasbt/LLMs-from-scratch)
 - [qwen3.c - Adrian Cable](https://github.com/adriancable/qwen3.c)
 
-<p align="center">
-  <img src="assets/arch.png" width="283" height="400" alt="arch">
-</p>
 
 ## Design Philosophy
 
