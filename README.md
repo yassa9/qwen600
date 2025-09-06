@@ -1,4 +1,4 @@
-## qwen600.cu
+# qwen600.cu
 
 <p align="center">
   <img src="assets/banner.png" width="429" height="139" alt="banner_">
@@ -27,9 +27,17 @@ What does `qwen600` include:
 - [LLMs-from-scratch - Sebastian Raschka](https://github.com/rasbt/LLMs-from-scratch)
 - [qwen3.c - Adrian Cable](https://github.com/adriancable/qwen3.c)
 
----
+<p align="center">
+  <img src="assets/arch.png" width="283" height="400" alt="banner_">
+</p>
 
-## WANNA TASTE ?!
+## Design Philosophy
+
+- The design of `qwen600.cu` is heavily inspired by the [suckless philosophy](https://suckless.org/philosophy/). 
+- The goal is to create a tool that is simple, minimalist, and highly performant by avoiding feature bloat and unnecessary abstractions. 
+- Configuration is done directly in the source code `config.h` as much as possible, and dependencies are kept to an absolute minimum.
+
+## WANNA TRY ?!
 
 ### Initial Setup
 
