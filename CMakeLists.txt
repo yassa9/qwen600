@@ -23,28 +23,28 @@ message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "Targeting CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 add_executable(
-    q600
+    qwen600
     main.cu
 )
 
 target_link_libraries(
-    q600 
+    qwen600 
     PRIVATE
     CUDA::cublas
     # CUDA::cudart
     )
 
-target_compile_options(q600 PRIVATE
+target_compile_options(qwen600 PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
 )
 
-set_target_properties(q600 PROPERTIES COMPILE_FLAGS "-O3")
+set_target_properties(qwen600 PROPERTIES COMPILE_FLAGS "-O3")
 
 # disable all warnings for both C++ and CUDA
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(q600 PRIVATE -w)
+    target_compile_options(qwen600 PRIVATE -w)
 endif()
 
 if (CMAKE_CUDA_COMPILER_ID MATCHES "NVIDIA")
-    target_compile_options(q600 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-w>)
+    target_compile_options(qwen600 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-w>)
 endif()

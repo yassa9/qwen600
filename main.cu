@@ -17,15 +17,16 @@
 void
 print_banner()
 {
-    printf("\n" COLOR_ORANGE 
-           "            ██████╗  ██████╗  ██████╗  ██████╗ \n"
-           "           ██╔═══██╗██╔════╝ ██╔═████╗██╔═████╗\n"
-           "           ██║   ██║███████╗ ██║██╔██║██║██╔██║\n"
-           "           ██║▄▄ ██║██╔═══██╗████╔╝██║████╔╝██║\n"
-           "           ╚██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝\n"
-           "            ╚══▀▀═╝  ╚═════╝  ╚═════╝  ╚═════╝ \n"
-           COLOR_RESET);
-    printf(COLOR_CYAN "            github: @yassa9\n" COLOR_RESET);
+    printf("\n" COLOR_ORANGE R"(
+   ██████╗ ██╗    ██╗███████╗███╗   ██╗ ██████╗  ██████╗  ██████╗
+  ██╔═══██╗██║    ██║██╔════╝████╗  ██║██╔════╝ ██╔═████╗██╔═████╗
+  ██║   ██║██║ █╗ ██║█████╗  ██╔██╗ ██║███████╗ ██║██╔██║██║██╔██║
+  ██║▄▄ ██║██║███╗██║██╔══╝  ██║╚██╗██║██╔═══██╗████╔╝██║████╔╝██║
+  ╚██████╔╝╚███╔███╔╝███████╗██║ ╚████║╚██████╔╝╚██████╔╝╚██████╔╝
+   ╚══▀▀═╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝  ╚═════╝  ╚═════╝
+)" COLOR_RESET);
+
+    printf(COLOR_CYAN "                          github: @yassa9\n" COLOR_RESET);
 }
 
 long
@@ -208,8 +209,8 @@ chat(
 void 
 error_usage()
 {
-    fprintf(stderr, "\nusage:   ./q600 <model_dir> [options]\n");
-    fprintf(stderr, "example: ./q600 hf_repo/ -r 1\n");
+    fprintf(stderr, "\nusage:   ./qwen600 <model_dir> [options]\n");
+    fprintf(stderr, "example: ./qwen600 <model_dir> -r 1\n");
     fprintf(stderr, "model directory must contain:\n");
     fprintf(stderr, "  - model.safetensors\n");
     fprintf(stderr, "  - tokenizer.bin\n");
@@ -218,10 +219,10 @@ error_usage()
     fprintf(stderr, "arguments:\n");
     fprintf(stderr, "----------\n");
     fprintf(stderr, "  -r <int>    reasoning mode, 0 (default) = no thinking, 1 = thinking\n");
-    fprintf(stderr, "  -s <int>    random seed, default time(NULL)\n");
+    fprintf(stderr, "  -s <int>    random seed, default \n");
     fprintf(stderr, "  -k <int>    k value in top-k sampling, default 20\n");
-    fprintf(stderr, "  -t <float>  temperature in [0,inf], default 1.0\n");
-    fprintf(stderr, "  -p <float>  p value in top-p (nucleus) sampling in [0,1], default 0.9\n");
+    fprintf(stderr, "  -t <float>  temperature in [0,inf], default 0.6\n");
+    fprintf(stderr, "  -p <float>  p value in top-p (nucleus) sampling in [0,1], default 0.95\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -y <string> system prompt in chat mode, default is none\n");
     fprintf(stderr, "  \n");

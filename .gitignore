@@ -6,3 +6,4 @@ qwenc/
 *.tiktoken
 model.safetensors
 *.safetensors
+*.gguf
