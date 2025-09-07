@@ -167,6 +167,7 @@ chat(
                 // first token of the response
                 in_thinking_section = enable_thinking; // reset thinking state
                 in_bold_section = 0; // reset bold state
+                if (in_thinking_section) { printf(COLOR_YELLOW); }
             }
 
             char* piece = decode(tokenizer, token);
@@ -174,10 +175,9 @@ chat(
             if (strcmp(piece, "</think>") == 0)
             {
                 in_thinking_section = 0;
+                if (!in_bold_section) { printf(COLOR_RESET); }
                 continue;
             }
-
-            if (in_thinking_section) { printf(COLOR_YELLOW); }
 
             char* current_pos = piece;
             char* marker;
@@ -189,13 +189,12 @@ chat(
                 // flip the bold state and change color accordingly
                 in_bold_section = !in_bold_section;
                 if (in_bold_section) { printf(COLOR_BOLD_RED); } 
-                else { printf("%s", in_thinking_section ? COLOR_YELLOW : COLOR_RESET); }
+                else if (in_thinking_section) { printf(COLOR_YELLOW); }
+                else { printf(COLOR_RESET); }
                 current_pos = marker + 2; // Move past the "**"
             }
             // print any remaining text after the last marker
             printf("%s", current_pos);
-
-            if (!in_bold_section) { printf(COLOR_RESET); }
 
             fflush(stdout);
         }
