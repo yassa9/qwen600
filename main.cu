@@ -147,7 +147,48 @@ chat(
         if (pos > num_prompt_tokens)
         {
             generated_tokens++;
-             // stop generation if we sample an EOS token
+
+            static int in_thinking_section = 0;
+            static int in_bold_section = 0;
+
+            if (pos == num_prompt_tokens + 1)
+            {
+                // first token of the response
+                in_thinking_section = enable_thinking; // reset thinking state
+                in_bold_section = 0; // reset bold state
+                if (in_thinking_section) { printf(COLOR_YELLOW); }
+            }
+
+            char* piece = decode(tokenizer, token);
+
+            if (strcmp(piece, "</think>") == 0)
+            {
+                in_thinking_section = 0;
+                if (!in_bold_section) { printf(COLOR_RESET); }
+            }
+            else
+            {
+                char* current_pos = piece;
+                char* marker;
+                while ((marker = strstr(current_pos, "**")) != NULL)
+                {
+                    // print the text before the marker
+                    fwrite(current_pos, 1, marker - current_pos, stdout);
+
+                    // flip the bold state and change color accordingly
+                    in_bold_section = !in_bold_section;
+                    if (in_bold_section) { printf(COLOR_BOLD_RED); }
+                    else if (in_thinking_section) { printf(COLOR_YELLOW); }
+                    else { printf(COLOR_RESET); }
+                    current_pos = marker + 2; // Move past the "**"
+                }
+                // print any remaining text after the last marker
+                printf("%s", current_pos);
+            }
+
+            fflush(stdout);
+
+            // stop generation if we sample an EOS token
             if (next == tokenizer->eos_token_id)
             {
                 long end_time = time_in_ms();
@@ -158,46 +199,6 @@ chat(
                 user_turn = 1;
                 continue;
             }
-            
-            static int in_thinking_section = 0;
-            static int in_bold_section = 0;
-                
-            if (pos == num_prompt_tokens + 1)
-            { 
-                // first token of the response
-                in_thinking_section = enable_thinking; // reset thinking state
-                in_bold_section = 0; // reset bold state
-            }
-
-            char* piece = decode(tokenizer, token);
-
-            if (strcmp(piece, "</think>") == 0)
-            {
-                in_thinking_section = 0;
-                continue;
-            }
-
-            if (in_thinking_section) { printf(COLOR_YELLOW); }
-
-            char* current_pos = piece;
-            char* marker;
-            while ((marker = strstr(current_pos, "**")) != NULL)
-            {
-                // print the text before the marker
-                fwrite(current_pos, 1, marker - current_pos, stdout);
-
-                // flip the bold state and change color accordingly
-                in_bold_section = !in_bold_section;
-                if (in_bold_section) { printf(COLOR_BOLD_RED); } 
-                else { printf("%s", in_thinking_section ? COLOR_YELLOW : COLOR_RESET); }
-                current_pos = marker + 2; // Move past the "**"
-            }
-            // print any remaining text after the last marker
-            printf("%s", current_pos);
-
-            if (!in_bold_section) { printf(COLOR_RESET); }
-
-            fflush(stdout);
         }
     }
     free(prompt_tokens);
