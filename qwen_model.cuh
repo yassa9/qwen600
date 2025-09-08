@@ -381,34 +381,51 @@ rope_gpu_naive(
 // ================================================================
 __global__ void
 softmax_kernel(
-    float* att, 
+    float* att,
     int pos)
 {
-    // grid: N_HEADS, block: 1
+    // grid: N_HEADS, block: THREADS_PER_BLOCK (e.g., 256), strided loops
     int h = blockIdx.x;
-
     float* scores = att + (size_t)h * SEQ_LEN;
     int len = pos + 1;
 
-    // find max value for numerical stability
-    // float max_val = -HUGE_VALF;
-    float max_val = -1e9f;
-    for (int i = 0; i < len; i++)
-    {
-        if (scores[i] > max_val) { max_val = scores[i]; }
-    }
+    using BlockReduce = cub::BlockReduce<float, THREADS_PER_BLOCK>;
+    __shared__ typename BlockReduce::TempStorage tmp_max;
+    __shared__ typename BlockReduce::TempStorage tmp_sum;
+    __shared__ float shared_max;
+    __shared__ float shared_sum;
 
-    // exp and sum
-    float sum = 0.0f;
-    for (int i = 0; i < len; i++)
+    // 1) find max for numerical stability
+    float local_max = -1e30f;
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
     {
-        scores[i] = expf(scores[i] - max_val);
-        sum += scores[i];
+        float v = scores[i];
+        local_max = fmaxf(local_max, v);
     }
+    float red_max = BlockReduce(tmp_max).Reduce(local_max, cub::Max());
+    if (threadIdx.x == 0) shared_max = red_max;
+    __syncthreads();
+    float block_max = shared_max;
 
-    // normalize
-    float inv_sum = 1.0f / sum;
-    for (int i = 0; i < len; i++) { scores[i] *= inv_sum; }
+    // 2) compute exp and sum (in registers), don't overwrite yet
+    float local_sum = 0.0f;
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
+    {
+        float e = __expf(scores[i] - block_max);
+        local_sum += e;
+    }
+    float red_sum = BlockReduce(tmp_sum).Sum(local_sum);
+    if (threadIdx.x == 0) shared_sum = red_sum;
+    __syncthreads();
+    float block_sum = shared_sum;
+
+    // 3) normalize and write back
+    float inv_sum = 1.0f / block_sum;
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
+    {
+        float e = __expf(scores[i] - block_max);
+        scores[i] = e * inv_sum;
+    }
 }
 
 // ================================================================
@@ -494,8 +511,8 @@ attention_gpu(
         s->att, s->q, layer_key_cache, pos
     );
 
-    // kernel 2: softmax
-    softmax_kernel<<<N_HEADS, 1>>>(s->att, pos);
+    // kernel 2: softmax (parallelized over block with striding)
+    softmax_kernel<<<N_HEADS, THREADS_PER_BLOCK>>>(s->att, pos);
 
     // kernel 3: aggregate V values
     attention_v_kernel<<<N_HEADS, HEAD_DIM>>>(
